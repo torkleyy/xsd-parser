@@ -1,0 +1,7 @@
+<tns:Document xmlns:tns="http://example.com/cdata">
+    <tns:Title>Sample Document</tns:Title>
+    <tns:Content><![CDATA[This is <text> with special chars & symbols]]></tns:Content>
+    <tns:Code><![CDATA[fn main() {
+    println!("Hello, world!");
+}]]></tns:Code>
+</tns:Document>

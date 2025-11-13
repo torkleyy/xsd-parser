@@ -443,6 +443,7 @@ impl DeserializeBytesFromStr for num::BigUint {}
 #[derive(Debug)]
 pub struct ContentDeserializer<T> {
     data: Vec<u8>,
+    has_cdata: bool,
     marker: PhantomData<T>,
 }
 
@@ -458,6 +459,7 @@ where
             Event::Start(_) => Ok(DeserializerOutput {
                 artifact: DeserializerArtifact::Deserializer(Self {
                     data: Vec::new(),
+                    has_cdata: false,
                     marker: PhantomData,
                 }),
                 event: DeserializerEvent::None,
@@ -486,7 +488,60 @@ where
     {
         match event {
             Event::Text(x) => {
+                // Text content may be escaped, so decode and unescape it before adding
+                if self.has_cdata {
+                    // Already have cdata, text needs immediate unescaping
+                    // Use the same process as in finish() for consistency
+                    if let Ok(text_str) = from_utf8(x.as_ref()) {
+                        let text = BytesText::from_escaped(text_str);
+                        match text.decode() {
+                            Ok(decoded) => {
+                                match unescape(&decoded) {
+                                    Ok(unescaped) => {
+                                        self.data.extend_from_slice(unescaped.as_bytes());
+                                    }
+                                    Err(_) => {
+                                        self.data.extend_from_slice(x.as_ref());
+                                    }
+                                }
+                            },
+                            Err(_) => {
+                                self.data.extend_from_slice(x.as_ref());
+                            }
+                        }
+                    } else {
+                        self.data.extend_from_slice(x.as_ref());
+                    }
+                } else {
+                    // No cdata yet, accumulate as-is for later processing
+                    self.data.extend_from_slice(x.as_ref());
+                }
+
+                Ok(DeserializerOutput {
+                    artifact: DeserializerArtifact::Deserializer(self),
+                    event: DeserializerEvent::None,
+                    allow_any: false,
+                })
+            }
+            Event::CData(x) => {
+                // If we had raw text before, we need to process it first
+                if !self.has_cdata && !self.data.is_empty() {
+                    // Process existing text content - clone to avoid borrow issues
+                    let existing_data = self.data.clone();
+                    if let Ok(text_str) = from_utf8(&existing_data[..]) {
+                        let text = BytesText::from_escaped(text_str);
+                        if let Ok(decoded) = text.decode() {
+                            if let Ok(unescaped) = unescape(&decoded) {
+                                self.data.clear();
+                                self.data.extend_from_slice(unescaped.as_bytes());
+                            }
+                        }
+                    }
+                }
+                
+                // CData content is not escaped, add as-is
                 self.data.extend_from_slice(x.as_ref());
+                self.has_cdata = true;
 
                 Ok(DeserializerOutput {
                     artifact: DeserializerArtifact::Deserializer(self),
@@ -495,9 +550,23 @@ where
                 })
             }
             Event::GeneralRef(x) => {
-                self.data.push(b'&');
-                self.data.extend_from_slice(x.as_ref());
-                self.data.push(b';');
+                if self.has_cdata {
+                    // Decode the reference immediately
+                    let ref_str = from_utf8(x.as_ref()).unwrap_or("");
+                    let full_ref = format!("&{};", ref_str);
+                    if let Ok(unescaped) = unescape(&full_ref) {
+                        self.data.extend_from_slice(unescaped.as_bytes());
+                    } else {
+                        self.data.push(b'&');
+                        self.data.extend_from_slice(x.as_ref());
+                        self.data.push(b';');
+                    }
+                } else {
+                    // Preserve for later processing
+                    self.data.push(b'&');
+                    self.data.extend_from_slice(x.as_ref());
+                    self.data.push(b';');
+                }
 
                 Ok(DeserializerOutput {
                     artifact: DeserializerArtifact::Deserializer(self),
@@ -527,11 +596,17 @@ where
         R: XmlReader,
     {
         let text = from_utf8(&self.data[..])?;
-        let text = BytesText::from_escaped(text);
-        let text = text.decode()?;
-        let text = unescape(&text)?;
-
-        T::deserialize_bytes(reader, text.as_bytes().trim_ascii())
+        
+        // If we have CDATA, content is already processed (unescaped text + raw cdata)
+        // Otherwise, we need to process text content
+        if self.has_cdata {
+            T::deserialize_bytes(reader, text.as_bytes().trim_ascii())
+        } else {
+            let text = BytesText::from_escaped(text);
+            let text = text.decode()?;
+            let text = unescape(&text)?;
+            T::deserialize_bytes(reader, text.as_bytes().trim_ascii())
+        }
     }
 }
 
@@ -808,6 +883,7 @@ where
             | Some(
                 Event::Decl(_)
                 | Event::Text(_)
+                | Event::CData(_)
                 | Event::Comment(_)
                 | Event::DocType(_)
                 | Event::GeneralRef(_)

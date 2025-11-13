@@ -1,0 +1,4 @@
+<tns:MixedContent xmlns:tns="http://example.com/cdata">
+    <tns:Description>This has &lt;escaped&gt; text and <![CDATA[<unescaped> & raw]]> content mixed together with &amp; more
+        escapes</tns:Description>
+</tns:MixedContent>
