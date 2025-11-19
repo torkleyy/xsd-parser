@@ -9,6 +9,7 @@ mod choice;
 mod choice_flatten_content;
 mod choice_with_sequence;
 mod complex_type_empty;
+mod mixed_choice_any;
 mod complex_type_with_group;
 mod complex_type_with_repeated_content;
 mod custom_type;
